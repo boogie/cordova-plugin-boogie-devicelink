@@ -10,6 +10,9 @@ const DeviceStateMachine = require('./state_machine');
 const OperationQueue = require('./operation_queue');
 const ScanManager = require('./scan_manager');
 const Pacer = require('./pacer');
+const BulkTransfer = require('./bulk_transfer');
+const CapabilityRegistry = require('./capabilities');
+const Device = require('./device');
 
 const DeviceLink = {
   // Keep in sync with package.json / plugin.xml (asserted by the test suite).
@@ -20,6 +23,12 @@ const DeviceLink = {
   OperationQueue,
   ScanManager,
   Pacer,
+  BulkTransfer,
+  CapabilityRegistry,
+  Device,
+
+  // Shared default capability registry (protocols like 'battery').
+  capabilities: CapabilityRegistry.default,
 
   STATES: DeviceStateMachine.STATES,
   DISCONNECT_REASONS: DeviceStateMachine.DISCONNECT_REASONS,

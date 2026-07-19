@@ -82,6 +82,56 @@ unknown → discovered → connecting → discovering → configuring → ready
             └── reconnecting ← reconnectWaiting ← disconnected ←──┘
 ```
 
+## A device class in practice
+
+One instance is one connection; the profile is declarative and the base class
+owns everything generic:
+
+```js
+const { Device } = DeviceLink;
+
+class EInkDisplay extends Device {
+  constructor(opts) {
+    super(Object.assign({ profile: EInkDisplay.profile }, opts));
+  }
+
+  // 'battery' + 'textDisplay' protocols — validated at construction
+  getBattery() { return this._battery; }
+  sendText(text) { return this.write('uartWrite', text + '\n'); }
+}
+
+EInkDisplay.profile = {
+  deviceType: 'einkDisplay',
+  capabilities: ['battery', 'textDisplay'],
+  connection: {
+    connectTimeoutMs: 15000,
+    reconnect: { policy: 'onUnexpectedDisconnect', initialDelayMs: 1000, maxDelayMs: 30000, factor: 2 }
+  },
+  characteristics: {
+    uartWrite: { service: 'FFE0', characteristic: 'FFE1', writeType: 'noResponse' },
+    uartNotify: { service: 'FFE0', characteristic: 'FFE2' },
+    battery: {
+      service: '180F', characteristic: '2A19',
+      onData: (device, bytes) => {
+        device._battery = bytes[0];
+        device.emit('batteryChanged', { level: bytes[0] });
+      }
+    }
+  },
+  onConnect: [
+    { action: 'subscribe', target: 'uartNotify', timeoutMs: 5000, retries: 2 },
+    { action: 'read', target: 'battery', optional: true },
+    { action: 'write', target: 'uartWrite', data: '/hello\n' }
+  ]
+};
+
+const display = new EInkDisplay({});
+await display.connect({ id: savedId });        // resolves at READY, not at link-up
+await display.sendText('Hello!');
+display.on('batteryChanged', ({ level }) => render(level));
+display.on('connectionStateChanged', ({ state, reason }) => update(state));
+```
+
 ## Install
 
 ```
@@ -115,6 +165,17 @@ never install the two together.
   - `Pacer` — token-bucket flow control for devices that give no transfer
     feedback: keep the phone's TX buffer topped up without overrunning the
     device's receive buffer
+  - `BulkTransfer` — chunked bulk writes (images, drawings, firmware) with
+    pluggable flow control: ack-driven sliding windows where the device
+    acknowledges chunks, `Pacer`-driven fixed rate where it doesn't; abort,
+    progress events, resume from an index
+  - `CapabilityRegistry` — protocols for device classes (`battery`,
+    `textDisplay`, …): each capability declares required methods and events,
+    and device classes are validated against them at construction
+  - `Device` — the base class where one instance is one connection:
+    declarative profile, connect pipeline running through the queue with
+    per-step timeouts and retries, notification routing, disconnect reasons,
+    and reconnect policies with exponential backoff
 - **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
   (an ANR observed in production) is fixed at the source — scan state is
   claimed/released in short monitor blocks and framework calls happen outside
@@ -124,12 +185,10 @@ never install the two together.
 
 1. ~~Fork, rebrand, test infrastructure, runtime core~~
 2. ~~Scan manager (single scan owner, transfer holds) + the native scan deadlock
-   fix~~ *(you are here)*
-3. Transfer engine and profiles: chunked bulk writes with pluggable flow control —
-   ack-driven windows where the device acknowledges chunks, `Pacer`-driven fixed
-   rate where it doesn't — plus declarative device profiles, connection pipeline,
-   `Device` base class, capability registry, and the first device classes, all
-   running against a `MockBluetoothLE` simulator with scriptable virtual devices
+   fix~~
+3. ~~Transfer engine (ack windows / paced rate), declarative device profiles,
+   connection pipeline, `Device` base class, capability protocols — tested
+   against a scriptable virtual-device mock~~ *(you are here)*
 4. Snapshot API + sequenced event stream (survive WebView reloads), structured
    diagnostics with an exportable report
 5. Firmware update module (transport-agnostic: custom BLE, Nordic DFU, SMP) — separate

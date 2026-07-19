@@ -20,6 +20,9 @@
   <js-module src="www/devicelink/operation_queue.js" name="operation_queue" />
   <js-module src="www/devicelink/scan_manager.js" name="scan_manager" />
   <js-module src="www/devicelink/pacer.js" name="pacer" />
+  <js-module src="www/devicelink/bulk_transfer.js" name="bulk_transfer" />
+  <js-module src="www/devicelink/capabilities.js" name="capabilities" />
+  <js-module src="www/devicelink/device.js" name="device" />
   <js-module src="www/devicelink/devicelink.js" name="devicelink">
     <clobbers target="window.DeviceLink" />
   </js-module>

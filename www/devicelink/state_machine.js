@@ -37,7 +37,7 @@ const TRANSITIONS = {
   updatingFirmware: ['ready', 'disconnecting', 'disconnected', 'failed'],
   disconnecting: ['disconnected'],
   disconnected: ['connecting', 'reconnectWaiting', 'discovered'],
-  reconnectWaiting: ['reconnecting', 'disconnected'],
+  reconnectWaiting: ['reconnecting', 'connecting', 'disconnected'],
   reconnecting: ['discovering', 'reconnectWaiting', 'disconnected', 'failed'],
   failed: ['connecting', 'discovered', 'disconnected']
 };
