@@ -68,7 +68,10 @@ public class BluetoothLePlugin extends CordovaPlugin {
 
   //General callback variables
   private CallbackContext initCallbackContext;
-  private CallbackContext scanCallbackContext;
+  // volatile: read lock-free by the scan callbacks. The BLE framework delivers
+  // those callbacks while holding its own internal lock, so they must never
+  // block on the plugin monitor (lock-order deadlock with stopScanAction).
+  private volatile CallbackContext scanCallbackContext;
   private CallbackContext permissionsCallback;
   private CallbackContext locationCallback;
 
@@ -1213,18 +1216,26 @@ public class BluetoothLePlugin extends CordovaPlugin {
     //Else listen to initialize callback for disabling
   }
 
-  private synchronized void startScanAction(JSONArray args, CallbackContext callbackContext) {
+  private void startScanAction(JSONArray args, CallbackContext callbackContext) {
     if (isNotInitialized(callbackContext, true)) {
       return;
     }
 
-    //If the adapter is already scanning, don't call another scan.
-    if (scanCallbackContext != null) {
-      JSONObject returnObj = new JSONObject();
-      addProperty(returnObj, keyError, errorStartScan);
-      addProperty(returnObj, keyMessage, logAlreadyScanning);
-      callbackContext.error(returnObj);
-      return;
+    // Claim the scanning slot atomically. The framework startScan call below
+    // must stay OUTSIDE this monitor: holding it while calling into the
+    // scanner deadlocks against a concurrently delivered onScanResult.
+    synchronized (this) {
+      //If the adapter is already scanning, don't call another scan.
+      if (scanCallbackContext != null) {
+        JSONObject returnObj = new JSONObject();
+        addProperty(returnObj, keyError, errorStartScan);
+        addProperty(returnObj, keyMessage, logAlreadyScanning);
+        callbackContext.error(returnObj);
+        return;
+      }
+
+      //Save the callback context for reporting back found connections. Also the isScanning flag
+      scanCallbackContext = callbackContext;
     }
 
     //Get the service UUIDs from the arguments
@@ -1234,9 +1245,6 @@ public class BluetoothLePlugin extends CordovaPlugin {
       obj = new JSONObject();
     }
     UUID[] uuids = getServiceUuids(obj);
-
-    //Save the callback context for reporting back found connections. Also the isScanning flag
-    scanCallbackContext = callbackContext;
 
     if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.LOLLIPOP) {
       boolean result = uuids.length == 0 ? bluetoothAdapter.startLeScan(scanCallbackKitKat) : bluetoothAdapter.startLeScan(uuids, scanCallbackKitKat);
@@ -1304,19 +1312,30 @@ public class BluetoothLePlugin extends CordovaPlugin {
     }
   }
 
-  private synchronized void stopScanAction(CallbackContext callbackContext) {
+  private void stopScanAction(CallbackContext callbackContext) {
     if (isNotInitialized(callbackContext, true)) {
       return;
     }
 
     JSONObject returnObj = new JSONObject();
 
-    //Check if already scanning
-    if (scanCallbackContext == null) {
-      addProperty(returnObj, keyError, errorStopScan);
-      addProperty(returnObj, keyMessage, logNotScanning);
-      callbackContext.error(returnObj);
-      return;
+    // Release the scanning slot atomically BEFORE calling the framework: any
+    // result delivered from here on is dropped by the callbacks' null check.
+    // The framework stopScan call must stay OUTSIDE the monitor — calling it
+    // with the monitor held deadlocks against a concurrently delivered
+    // onScanResult (framework holds its client lock, wants this monitor;
+    // we hold this monitor, want its client lock).
+    synchronized (this) {
+      //Check if already scanning
+      if (scanCallbackContext == null) {
+        addProperty(returnObj, keyError, errorStopScan);
+        addProperty(returnObj, keyMessage, logNotScanning);
+        callbackContext.error(returnObj);
+        return;
+      }
+
+      //Set scanning state
+      scanCallbackContext = null;
     }
 
     if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.LOLLIPOP) {
@@ -1324,9 +1343,6 @@ public class BluetoothLePlugin extends CordovaPlugin {
     } else {
       bluetoothAdapter.getBluetoothLeScanner().stopScan(scanCallback);
     }
-
-    //Set scanning state
-    scanCallbackContext = null;
 
     //Inform user
     addProperty(returnObj, keyStatus, statusScanStopped);
@@ -3075,24 +3091,26 @@ public class BluetoothLePlugin extends CordovaPlugin {
   private LeScanCallback scanCallbackKitKat = new LeScanCallback() {
     @Override
     public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
-      synchronized (BluetoothLePlugin.this) {
-
-        if (scanCallbackContext == null) {
-          return;
-        }
-
-        JSONObject returnObj = new JSONObject();
-
-        addDevice(returnObj, device);
-
-        addProperty(returnObj, keyRssi, rssi);
-        addPropertyBytes(returnObj, keyAdvertisement, scanRecord);
-        addProperty(returnObj, keyStatus, statusScanResult);
-
-        PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, returnObj);
-        pluginResult.setKeepCallback(true);
-        scanCallbackContext.sendPluginResult(pluginResult);
+      // Snapshot the volatile field instead of taking the plugin monitor: the
+      // framework delivers this callback while holding its own lock, and
+      // blocking here on the monitor held by stopScanAction deadlocks. A
+      // result racing a stopScan may still be delivered once — harmless.
+      CallbackContext callback = scanCallbackContext;
+      if (callback == null) {
+        return;
       }
+
+      JSONObject returnObj = new JSONObject();
+
+      addDevice(returnObj, device);
+
+      addProperty(returnObj, keyRssi, rssi);
+      addPropertyBytes(returnObj, keyAdvertisement, scanRecord);
+      addProperty(returnObj, keyStatus, statusScanResult);
+
+      PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, returnObj);
+      pluginResult.setKeepCallback(true);
+      callback.sendPluginResult(pluginResult);
     }
   };
 
@@ -3110,50 +3128,62 @@ public class BluetoothLePlugin extends CordovaPlugin {
 
       @Override
       public void onScanFailed(int errorCode) {
+        // Snapshot instead of holding the plugin monitor — see onScanResult.
+        CallbackContext callback = scanCallbackContext;
+        if (callback == null)
+          return;
+
+        JSONObject returnObj = new JSONObject();
+        addProperty(returnObj, keyError, errorStartScan);
+
+        if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
+          addProperty(returnObj, keyMessage, "Scan already started");
+        } else if (errorCode == ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED) {
+          addProperty(returnObj, keyMessage, "Application registration failed");
+        } else if (errorCode == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED) {
+          addProperty(returnObj, keyMessage, "Feature unsupported");
+        } else if (errorCode == ScanCallback.SCAN_FAILED_INTERNAL_ERROR) {
+          addProperty(returnObj, keyMessage, "Internal error");
+        } else {
+          addProperty(returnObj, keyMessage, logScanStartFail);
+        }
+
+        callback.error(returnObj);
+
+        // Clear only if no newer scan claimed the slot meanwhile. No framework
+        // call happens inside this monitor, so it cannot deadlock.
         synchronized (BluetoothLePlugin.this) {
-          if (scanCallbackContext == null)
-            return;
-
-          JSONObject returnObj = new JSONObject();
-          addProperty(returnObj, keyError, errorStartScan);
-
-          if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
-            addProperty(returnObj, keyMessage, "Scan already started");
-          } else if (errorCode == ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED) {
-            addProperty(returnObj, keyMessage, "Application registration failed");
-          } else if (errorCode == ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED) {
-            addProperty(returnObj, keyMessage, "Feature unsupported");
-          } else if (errorCode == ScanCallback.SCAN_FAILED_INTERNAL_ERROR) {
-            addProperty(returnObj, keyMessage, "Internal error");
-          } else {
-            addProperty(returnObj, keyMessage, logScanStartFail);
+          if (scanCallbackContext == callback) {
+            scanCallbackContext = null;
           }
-
-          scanCallbackContext.error(returnObj);
-          scanCallbackContext = null;
         }
       }
 
       @Override
       public void onScanResult(int callbackType, ScanResult result) {
-        synchronized (BluetoothLePlugin.this) {
-          if (scanCallbackContext == null)
-            return;
+        // Snapshot the volatile field instead of taking the plugin monitor:
+        // the framework delivers this callback while holding its own client
+        // lock, and blocking here on the monitor held by stopScanAction is a
+        // lock-order deadlock (observed as an ANR: main thread waiting here,
+        // JavaBridge thread inside the framework's stopScan). A result racing
+        // a stopScan may still be delivered once — harmless.
+        CallbackContext callback = scanCallbackContext;
+        if (callback == null)
+          return;
 
-          JSONObject returnObj = new JSONObject();
+        JSONObject returnObj = new JSONObject();
 
-          addDevice(returnObj, result.getDevice());
-          if(result.getScanRecord().getDeviceName() != null){
-            addProperty(returnObj, keyName, result.getScanRecord().getDeviceName().replace("\0", ""));
-          }
-          addProperty(returnObj, keyRssi, result.getRssi());
-          addPropertyBytes(returnObj, keyAdvertisement, result.getScanRecord().getBytes());
-          addProperty(returnObj, keyStatus, statusScanResult);
-
-          PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, returnObj);
-          pluginResult.setKeepCallback(true);
-          scanCallbackContext.sendPluginResult(pluginResult);
+        addDevice(returnObj, result.getDevice());
+        if(result.getScanRecord().getDeviceName() != null){
+          addProperty(returnObj, keyName, result.getScanRecord().getDeviceName().replace("\0", ""));
         }
+        addProperty(returnObj, keyRssi, result.getRssi());
+        addPropertyBytes(returnObj, keyAdvertisement, result.getScanRecord().getBytes());
+        addProperty(returnObj, keyStatus, statusScanResult);
+
+        PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, returnObj);
+        pluginResult.setKeepCallback(true);
+        callback.sendPluginResult(pluginResult);
       }
     };
   }
