@@ -132,6 +132,46 @@ display.on('batteryChanged', ({ level }) => render(level));
 display.on('connectionStateChanged', ({ state, reason }) => update(state));
 ```
 
+## Peripheral mode
+
+The engine's full GATT-server + advertising support (both platforms) gets the
+same treatment as the central role — promises, typed events, and bookkeeping
+the app otherwise reimplements every time:
+
+```js
+const peripheral = new DeviceLink.Peripheral({});
+await peripheral.initialize();
+
+await peripheral.addService({
+  service: 'FF10',
+  characteristics: [{
+    uuid: 'FF13',
+    properties: { read: true, notify: true, indicate: true },
+    permissions: { read: true }
+  }]
+});
+
+await peripheral.startAdvertising({ name: 'STATUS-BOARD', services: ['FF10'] });
+// timeout defaults to 0: advertise until stopAdvertising()
+
+peripheral.on('subscribed', ({ address }) => console.log(address, 'is listening'));
+peripheral.on('writeRequested', (req) => {
+  handle(req.value);                    // already decoded to a Uint8Array
+  if (req.responseNeeded) req.respond();
+});
+peripheral.on('readRequested', (req) => req.respond(currentStateBytes()));
+
+// push to every subscribed central; individual failures don't stop the rest
+await peripheral.notifyAll({ service: 'FF10', characteristic: 'FF13', value: 'tick' });
+```
+
+Subscriber lists survive UUID-format differences between platforms (`FF13` and
+`0000ff13-0000-1000-8000-00805f9b34fb` are the same characteristic), and a
+central's disconnect purges its subscriptions automatically. On Android,
+prepared (long) writes are assembled natively and delivered as one
+`writeRequested`; error responses (`req.error(attStatus)`) work on both
+platforms.
+
 ## Install
 
 ```
@@ -187,6 +227,10 @@ never install the two together.
     connect-to-ready durations, logs disconnect reasons and scan activity,
     and serves `getSnapshot()` — the current state of every device, which is
     how a reloaded UI resyncs
+  - `Peripheral` — the phone as a GATT server, promisified: services,
+    advertising, subscriber and central tracking, request objects with
+    `respond()`/`error()` helpers, `notify`/`notifyAll`, UUID normalization
+    across platforms
 - **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
   (an ANR observed in production) is fixed at the source — scan state is
   claimed/released in short monitor blocks and framework calls happen outside
@@ -227,8 +271,8 @@ Related features that would fit this plugin well:
   transfer — a second transport the transfer engine could prefer when available.
 - **Non-BLE transports**: the runtime API is transport-shaped, not BLE-shaped — a
   WebSocket, LAN, or USB device could implement the same `Device` surface later.
-- **Multi-phone links**: one phone acting as a BLE peripheral for another (the engine
-  already supports peripheral mode).
+- **Multi-phone protocol**: a ready-made pattern for one phone driving another
+  over the `Peripheral` layer — identity, framing, and reconnect handled once.
 
 ## Tests
 

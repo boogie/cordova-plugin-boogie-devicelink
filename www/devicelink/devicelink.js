@@ -16,6 +16,7 @@ const Device = require('./device');
 const EventStream = require('./event_stream');
 const Diagnostics = require('./diagnostics');
 const Runtime = require('./runtime');
+const Peripheral = require('./peripheral');
 
 const DeviceLink = {
   // Keep in sync with package.json / plugin.xml (asserted by the test suite).
@@ -32,6 +33,7 @@ const DeviceLink = {
   EventStream,
   Diagnostics,
   Runtime,
+  Peripheral,
 
   // Shared default capability registry (protocols like 'battery').
   capabilities: CapabilityRegistry.default,
