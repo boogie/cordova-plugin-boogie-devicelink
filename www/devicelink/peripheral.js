@@ -13,6 +13,8 @@
 'use strict';
 
 const Emitter = require('./emitter');
+const OperationQueue = require('./operation_queue');
+const Pacer = require('./pacer');
 
 const BASE_UUID = /^0000([0-9A-F]{4})-0000-1000-8000-00805F9B34FB$/;
 
@@ -39,6 +41,12 @@ class Peripheral extends Emitter {
    * @param {object} [opts]
    * @param {object} [opts.ble] bluetoothle-compatible bridge (defaults to
    *   window.bluetoothle, resolved lazily)
+   * @param {Pacer} [opts.pacer] pace queued notifications…
+   * @param {object} [opts.pace] …or Pacer options to build one
+   * @param {number} [opts.readyTimeoutMs=5000] how long a queued notify waits
+   *   for the TX queue to free up after a sent:false
+   * @param {function} [opts.setTimeout] injectable timers for tests
+   * @param {function} [opts.clearTimeout]
    */
   constructor(opts = {}) {
     super();
@@ -48,6 +56,17 @@ class Peripheral extends Emitter {
     this._subscribers = new Map(); // 'SERVICE|CHARACTERISTIC' → Set<address>
     this._centrals = new Set();
     this._mtus = new Map();
+    this._handlers = new Map(); // 'SERVICE|CHARACTERISTIC' → { onRead, onWrite }
+    this._setTimeout = opts.setTimeout || ((fn, ms) => setTimeout(fn, ms));
+    this._clearTimeout = opts.clearTimeout || ((t) => clearTimeout(t));
+    this._pacer = opts.pacer || (opts.pace ? new Pacer(opts.pace) : null);
+    this._readyTimeoutMs = opts.readyTimeoutMs !== undefined ? opts.readyTimeoutMs : 5000;
+    // Serializes queued notifications — reuse pause() during other radio work.
+    this.notifyQueue = new OperationQueue({
+      name: 'peripheral-notify',
+      setTimeout: opts.setTimeout,
+      clearTimeout: opts.clearTimeout
+    });
   }
 
   _bridge() {
@@ -187,6 +206,82 @@ class Peripheral extends Emitter {
   }
 
   /**
+   * Register handlers for a characteristic — the "automatic respond" mode.
+   * With onRead, read requests are answered with its return value (or an ATT
+   * error if it throws); with onWrite, the decoded bytes are delivered and
+   * the request is acked automatically when a response is needed. Handled
+   * requests do NOT emit the generic readRequested/writeRequested events;
+   * handler exceptions emit 'handlerError'.
+   */
+  handle(service, characteristic, handlers) {
+    if (!handlers || (typeof handlers.onRead !== 'function' && typeof handlers.onWrite !== 'function')) {
+      throw new TypeError('handlers must provide onRead and/or onWrite');
+    }
+    this._handlers.set(normalizeUuid(service) + '|' + normalizeUuid(characteristic), handlers);
+  }
+
+  unhandle(service, characteristic) {
+    return this._handlers.delete(normalizeUuid(service) + '|' + normalizeUuid(characteristic));
+  }
+
+  /**
+   * Notify through the peripheral's OperationQueue: sends are serialized, an
+   * optional Pacer spaces them, and a sent:false (TX queue full) waits for
+   * notificationReady and retries once. Accepts the OperationQueue op options
+   * (priority, timeoutMs, retries).
+   */
+  queueNotify(params, opts = {}) {
+    return this.notifyQueue.enqueue({
+      name: 'notify:' + normalizeUuid(params.characteristic),
+      priority: opts.priority || 'normal',
+      timeoutMs: opts.timeoutMs,
+      retries: opts.retries,
+      run: () => this._pacedNotify(params)
+    });
+  }
+
+  async _pacedNotify(params) {
+    const bytes = typeof params.value === 'string'
+      ? new TextEncoder().encode(params.value)
+      : (params.value || new Uint8Array(0));
+    if (this._pacer) {
+      const delay = this._pacer.delayFor(bytes.length);
+      if (delay > 0) {
+        await new Promise((resolve) => this._setTimeout(resolve, delay));
+      }
+    }
+    let result = await this.notify(params);
+    if (result && result.sent === false) {
+      await this._waitForReady();
+      result = await this.notify(params);
+    }
+    if (this._pacer) {
+      this._pacer.onSent(bytes.length);
+    }
+    return result;
+  }
+
+  _waitForReady() {
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      const off = this.once('notificationReady', () => {
+        if (timer !== null) {
+          this._clearTimeout(timer);
+        }
+        resolve();
+      });
+      if (this._readyTimeoutMs > 0) {
+        timer = this._setTimeout(() => {
+          off();
+          const err = new Error('TX queue did not free up within ' + this._readyTimeoutMs + 'ms');
+          err.code = 'ETIMEDOUT';
+          reject(err);
+        }, this._readyTimeoutMs);
+      }
+    });
+  }
+
+  /**
    * Notify every central subscribed to the characteristic, sequentially.
    * Individual failures don't stop the rest; returns { sent, failed }.
    */
@@ -273,12 +368,26 @@ class Peripheral extends Emitter {
         });
         break;
       }
-      case 'readRequested':
-        this.emit('readRequested', this._request(result, false));
+      case 'readRequested': {
+        const request = this._request(result, false);
+        const handler = this._handlers.get(request.service + '|' + request.characteristic);
+        if (handler && typeof handler.onRead === 'function') {
+          this._autoRead(handler, request);
+        } else {
+          this.emit('readRequested', request);
+        }
         break;
-      case 'writeRequested':
-        this.emit('writeRequested', this._request(result, true));
+      }
+      case 'writeRequested': {
+        const request = this._request(result, true);
+        const handler = this._handlers.get(request.service + '|' + request.characteristic);
+        if (handler && typeof handler.onWrite === 'function') {
+          this._autoWrite(handler, request);
+        } else {
+          this.emit('writeRequested', request);
+        }
         break;
+      }
       case 'mtuChanged':
         this._mtus.set(result.address, result.mtu);
         this.emit('mtuChanged', { address: result.address, mtu: result.mtu });
@@ -291,6 +400,34 @@ class Peripheral extends Emitter {
         break;
       default:
         this.emit('peripheralEvent', result);
+    }
+  }
+
+  async _autoRead(handler, request) {
+    try {
+      const value = await handler.onRead(request);
+      await request.respond(value);
+    } catch (err) {
+      try {
+        await request.error(0x80);
+      } catch (ignored) { /* the central may be gone already */ }
+      this.emit('handlerError', { characteristic: request.characteristic, error: err });
+    }
+  }
+
+  async _autoWrite(handler, request) {
+    try {
+      await handler.onWrite(request.value, request);
+      if (request.responseNeeded) {
+        await request.respond();
+      }
+    } catch (err) {
+      if (request.responseNeeded) {
+        try {
+          await request.error(0x80);
+        } catch (ignored) { /* the central may be gone already */ }
+      }
+      this.emit('handlerError', { characteristic: request.characteristic, error: err });
     }
   }
 

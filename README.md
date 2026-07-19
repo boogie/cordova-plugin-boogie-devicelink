@@ -172,6 +172,51 @@ prepared (long) writes are assembled natively and delivered as one
 `writeRequested`; error responses (`req.error(attStatus)`) work on both
 platforms.
 
+**Automatic respond mode** — register per-characteristic handlers instead of
+wiring the request events yourself:
+
+```js
+peripheral.handle('FF10', 'FF13', {
+  onRead: () => currentStateBytes(),      // return value answers the read
+  onWrite: (bytes) => applyCommand(bytes) // acked automatically when needed
+});
+// a throwing handler answers with an ATT error and emits 'handlerError'
+```
+
+**Queued, paced notifications** — `queueNotify` reuses the `OperationQueue`
+and `Pacer` machinery: sends are serialized, an optional pacer spaces them,
+and a full TX queue (`sent: false`) waits for `notificationReady` and retries:
+
+```js
+const board = new DeviceLink.Peripheral({ pace: { bytesPerSecond: 2000, burstBytes: 100 } });
+// …
+await board.queueNotify({ service: 'FF10', characteristic: 'FF13', value: frame });
+```
+
+**A virtual device** — serve the same GATT layout a central-side device class
+expects, and you get an end-to-end virtual device: another phone (or the same
+test suite) can develop and CI-test the central code with no hardware at all:
+
+```js
+const virtualDisplay = new DeviceLink.Peripheral({});
+await virtualDisplay.initialize();
+await virtualDisplay.addService({
+  service: 'FFE0',
+  characteristics: [
+    { uuid: 'FFE1', properties: { write: true, writeNoResponse: true }, permissions: { write: true } },
+    { uuid: 'FFE2', properties: { notify: true }, permissions: { read: true } }
+  ]
+});
+virtualDisplay.handle('FFE0', 'FFE1', {
+  onWrite: (bytes) => screen.render(new TextDecoder().decode(bytes))
+});
+await virtualDisplay.startAdvertising({ name: 'EInk-Virtual', services: ['FFE0'] });
+// emulate the device's periodic battery report to whoever subscribed:
+setInterval(() => virtualDisplay.notifyAll({
+  service: 'FFE0', characteristic: 'FFE2', value: batteryFrame()
+}), 120000);
+```
+
 ## Install
 
 ```
@@ -229,8 +274,9 @@ never install the two together.
     how a reloaded UI resyncs
   - `Peripheral` — the phone as a GATT server, promisified: services,
     advertising, subscriber and central tracking, request objects with
-    `respond()`/`error()` helpers, `notify`/`notifyAll`, UUID normalization
-    across platforms
+    `respond()`/`error()` helpers, per-characteristic auto-respond handlers,
+    `notify`/`notifyAll` plus a queued+paced `queueNotify`, and UUID
+    normalization across platforms
 - **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
   (an ANR observed in production) is fixed at the source — scan state is
   claimed/released in short monitor blocks and framework calls happen outside

@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const Peripheral = require('../www/devicelink/peripheral.js');
+const { tick } = require('./mock_ble.js');
 
 const FULL_FF10 = '0000ff10-0000-1000-8000-00805f9b34fb';
 const FULL_FF13 = '0000ff13-0000-1000-8000-00805f9b34fb';
@@ -55,7 +56,7 @@ function createPeripheralMockBle() {
     },
     notify(success, error, params) {
       ble.log.push(['notify', params]);
-      if (ble.failNotifyFor === params.address) { error({ message: 'notify failed' }); return; }
+      if (ble.failNotifyFor !== undefined && ble.failNotifyFor === params.address) { error({ message: 'notify failed' }); return; }
       success({ status: 'notified' });
     },
     bytesToEncodedString: (bytes) => Buffer.from(bytes).toString('base64'),
@@ -212,6 +213,127 @@ test('unknown peripheral statuses surface as a generic event', async () => {
   peripheral.on('peripheralEvent', (e) => seen.push(e.status));
   ble.push({ status: 'somethingNew', detail: 1 });
   assert.deepEqual(seen, ['somethingNew']);
+});
+
+test('a read handler answers automatically; a throwing handler sends an ATT error', async () => {
+  const { ble, peripheral } = await setup();
+  const generic = [];
+  peripheral.on('readRequested', (req) => generic.push(req));
+  const handlerErrors = [];
+  peripheral.on('handlerError', (e) => handlerErrors.push(e.characteristic));
+
+  let value = new Uint8Array([42]);
+  peripheral.handle('FF10', 'FF13', { onRead: () => value });
+
+  ble.push({ status: 'readRequested', address: 'AA', requestId: 1, service: FULL_FF10, characteristic: FULL_FF13 });
+  await tick();
+  assert.equal(generic.length, 0); // handled requests skip the generic event
+  let respond = ble.log.filter((e) => e[0] === 'respond').pop()[1];
+  assert.deepEqual([...ble.encodedStringToBytes(respond.value)], [42]);
+
+  peripheral.handle('FF10', 'FF13', { onRead: () => { throw new Error('no value'); } });
+  ble.push({ status: 'readRequested', address: 'AA', requestId: 2, service: 'FF10', characteristic: 'FF13' });
+  await tick();
+  await tick();
+  respond = ble.log.filter((e) => e[0] === 'respond').pop()[1];
+  assert.equal(respond.status, 0x80);
+  assert.deepEqual(handlerErrors, ['FF13']);
+
+  assert.equal(peripheral.unhandle('ff10', 'ff13'), true);
+  ble.push({ status: 'readRequested', address: 'AA', requestId: 3, service: 'FF10', characteristic: 'FF13' });
+  assert.equal(generic.length, 1); // back to manual mode
+});
+
+test('a write handler gets decoded bytes and is acked only when a response is needed', async () => {
+  const { ble, peripheral } = await setup();
+  const written = [];
+  peripheral.handle('FF10', 'FF13', { onWrite: (bytes) => written.push([...bytes]) });
+
+  ble.push({
+    status: 'writeRequested', address: 'AA', requestId: 4,
+    service: 'FF10', characteristic: 'FF13',
+    value: ble.bytesToEncodedString(new Uint8Array([7, 8])),
+    responseNeeded: true
+  });
+  await tick();
+  await tick();
+  assert.deepEqual(written, [[7, 8]]);
+  const respond = ble.log.filter((e) => e[0] === 'respond').pop()[1];
+  assert.equal(respond.requestId, 4);
+
+  const respondsBefore = ble.log.filter((e) => e[0] === 'respond').length;
+  ble.push({
+    status: 'writeRequested', address: 'AA', requestId: 5,
+    service: 'FF10', characteristic: 'FF13',
+    value: ble.bytesToEncodedString(new Uint8Array([9])),
+    responseNeeded: false
+  });
+  await tick();
+  await tick();
+  assert.deepEqual(written[1], [9]);
+  assert.equal(ble.log.filter((e) => e[0] === 'respond').length, respondsBefore); // no ack for write-without-response
+});
+
+test('handle rejects an empty handler set', async () => {
+  const { peripheral } = await setup();
+  assert.throws(() => peripheral.handle('FF10', 'FF13', {}), TypeError);
+});
+
+test('queueNotify serializes sends and retries once after sent:false via notificationReady', async () => {
+  const ble = createPeripheralMockBle();
+  const timers = [];
+  const peripheral = new Peripheral({
+    ble,
+    setTimeout: (fn, ms) => { const id = { fn, ms }; timers.push(id); return id; },
+    clearTimeout: (id) => { const at = timers.indexOf(id); if (at >= 0) timers.splice(at, 1); }
+  });
+  await peripheral.initialize();
+
+  // first notify lands with a full TX queue
+  let first = true;
+  const origNotify = ble.notify;
+  ble.notify = (success, error, params) => {
+    ble.log.push(['notify', params]);
+    success({ status: 'notified', sent: first ? (first = false) : true });
+  };
+
+  const pending = peripheral.queueNotify({ service: 'FF10', characteristic: 'FF13', value: 'x' });
+  await tick();
+  await tick();
+  assert.equal(ble.log.filter((e) => e[0] === 'notify').length, 1); // waiting for the stack
+
+  ble.push({ status: 'notificationReady', address: 'AA' });
+  const result = await pending;
+  assert.equal(result.sent, true);
+  assert.equal(ble.log.filter((e) => e[0] === 'notify').length, 2);
+  ble.notify = origNotify;
+});
+
+test('queueNotify paces sends through an injected Pacer', async () => {
+  const ble = createPeripheralMockBle();
+  const clock = { t: 0 };
+  const timers = [];
+  const Pacer = require('../www/devicelink/pacer.js');
+  const peripheral = new Peripheral({
+    ble,
+    pacer: new Pacer({ bytesPerSecond: 1000, burstBytes: 4, now: () => clock.t }),
+    setTimeout: (fn, ms) => { const id = { fn, ms }; timers.push(id); return id; },
+    clearTimeout: (id) => { const at = timers.indexOf(id); if (at >= 0) timers.splice(at, 1); }
+  });
+  await peripheral.initialize();
+
+  await peripheral.queueNotify({ service: 'FF10', characteristic: 'FF13', value: 'abcd' }); // burst spent
+  const second = peripheral.queueNotify({ service: 'FF10', characteristic: 'FF13', value: 'efgh' });
+  await tick();
+  await tick();
+  const pace = timers.find((t) => t.ms === 4); // 4 bytes at 1000 B/s
+  assert.ok(pace, 'second notify should wait for pacer credit');
+  assert.equal(ble.log.filter((e) => e[0] === 'notify').length, 1);
+
+  clock.t += 4;
+  pace.fn();
+  await second;
+  assert.equal(ble.log.filter((e) => e[0] === 'notify').length, 2);
 });
 
 test('addService failures reject with an Error', async () => {

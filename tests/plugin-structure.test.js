@@ -71,10 +71,22 @@ test('both globals are clobbered: bluetoothle (raw escape hatch) and DeviceLink 
 });
 
 test('the DeviceLink namespace exposes the core building blocks', () => {
-  assert.equal(typeof DeviceLink.Emitter, 'function');
-  assert.equal(typeof DeviceLink.DeviceStateMachine, 'function');
-  assert.equal(typeof DeviceLink.OperationQueue, 'function');
+  const classes = [
+    'Emitter', 'DeviceStateMachine', 'OperationQueue', 'ScanManager', 'Pacer',
+    'BulkTransfer', 'CapabilityRegistry', 'Device', 'EventStream',
+    'Diagnostics', 'Runtime', 'Peripheral'
+  ];
+  for (const name of classes) {
+    assert.equal(typeof DeviceLink[name], 'function', name + ' missing from the namespace');
+  }
+  assert.ok(DeviceLink.capabilities, 'default capability registry missing');
   assert.ok(Array.isArray(DeviceLink.STATES));
   assert.ok(Array.isArray(DeviceLink.DISCONNECT_REASONS));
   assert.ok(Array.isArray(DeviceLink.PRIORITIES));
+});
+
+test('the iOS platform ships the Bluetooth usage descriptions', () => {
+  assert.ok(pluginXml.includes('NSBluetoothAlwaysUsageDescription'));
+  assert.ok(pluginXml.includes('NSBluetoothPeripheralUsageDescription'));
+  assert.ok(pluginXml.includes('BLUETOOTH_USAGE_DESCRIPTION'));
 });
