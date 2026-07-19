@@ -12,6 +12,15 @@
   <js-module src="www/bluetoothle.js" name="BluetoothLe">
     <clobbers target="window.bluetoothle" />
   </js-module>
+  <!-- DeviceLink runtime. The js-module name MUST equal the file's basename:
+       the modules require each other with relative ids ("./emitter"), which
+       cordova.js resolves against the module name. Asserted by the tests. -->
+  <js-module src="www/devicelink/emitter.js" name="emitter" />
+  <js-module src="www/devicelink/state_machine.js" name="state_machine" />
+  <js-module src="www/devicelink/operation_queue.js" name="operation_queue" />
+  <js-module src="www/devicelink/devicelink.js" name="devicelink">
+    <clobbers target="window.DeviceLink" />
+  </js-module>
   <platform name="android">
     <config-file target="res/xml/config.xml" parent="/*">
       <feature name="BluetoothLePlugin">
