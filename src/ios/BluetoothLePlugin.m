@@ -267,6 +267,7 @@ NSString *const operationWrite = @"write";
     CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:returnObj];
     [pluginResult setKeepCallbackAsBool:false];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    return;
   }
 
   [peripheralManager removeService:service]; //Need to store CBMutableService
@@ -304,6 +305,7 @@ NSString *const operationWrite = @"write";
     CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:returnObj];
     [pluginResult setKeepCallbackAsBool:false];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    return;
   }
 
   NSDictionary* obj = (NSDictionary *)[command.arguments objectAtIndex:0];
@@ -330,6 +332,7 @@ NSString *const operationWrite = @"write";
     CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:returnObj];
     [pluginResult setKeepCallbackAsBool:false];
     [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+    return;
   }
 
   [peripheralManager stopAdvertising];

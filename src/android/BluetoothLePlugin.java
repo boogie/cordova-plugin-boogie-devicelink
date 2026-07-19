@@ -44,6 +44,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 import org.json.JSONArray;
@@ -72,6 +73,11 @@ public class BluetoothLePlugin extends CordovaPlugin {
   // those callbacks while holding its own internal lock, so they must never
   // block on the plugin monitor (lock-order deadlock with stopScanAction).
   private volatile CallbackContext scanCallbackContext;
+  // Prepared (long) writes buffered per central until onExecuteWrite, keyed
+  // by device address, then characteristic, then chunk offset. Guarded by
+  // synchronized(preparedWrites) — GATT server callbacks arrive on binder
+  // threads.
+  private final HashMap<String, HashMap<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>>> preparedWrites = new HashMap<String, HashMap<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>>>();
   private CallbackContext permissionsCallback;
   private CallbackContext locationCallback;
 
@@ -571,7 +577,12 @@ public class BluetoothLePlugin extends CordovaPlugin {
         characteristic.addDescriptor(descriptor);
       }
 
-      JSONArray descriptorsIn = obj.optJSONArray("descriptors");
+      // Per-characteristic descriptors; the service-level array is kept as a
+      // fallback for backward compatibility with the old (buggy) behavior.
+      JSONArray descriptorsIn = characteristicIn.optJSONArray("descriptors");
+      if (descriptorsIn == null) {
+        descriptorsIn = obj.optJSONArray("descriptors");
+      }
 
       if (descriptorsIn != null) {
         for (int j = 0; j < descriptorsIn.length(); j++) {
@@ -722,7 +733,9 @@ public class BluetoothLePlugin extends CordovaPlugin {
     boolean connectable = obj.optBoolean("connectable", true);
     settingsBuilder.setConnectable(connectable);
 
-    int timeout = obj.optInt("timeout", 1000);
+    // 0 = advertise until stopAdvertising — the sane default; a forgotten
+    // timeout silently killing the advertisement after 1s is not.
+    int timeout = obj.optInt("timeout", 0);
     if (timeout < 0 || timeout > 180000) {
       JSONObject returnObj = new JSONObject();
 
@@ -732,8 +745,12 @@ public class BluetoothLePlugin extends CordovaPlugin {
       callbackContext.error(returnObj);
       return;
     }
-    String adapterName = obj.optString("name");
-    bluetoothAdapter.setName(adapterName);
+    // Only touch the adapter name when one was actually provided — the
+    // adapter name is a system-wide setting.
+    String adapterName = obj.optString("name", null);
+    if (adapterName != null && !adapterName.isEmpty()) {
+      bluetoothAdapter.setName(adapterName);
+    }
 
     settingsBuilder.setTimeout(timeout);
 
@@ -825,7 +842,7 @@ public class BluetoothLePlugin extends CordovaPlugin {
     int offset = obj.optInt("offset", 0);
     byte[] value = getPropertyBytes(obj, "value");
 
-    boolean result = gattServer.sendResponse(device, requestId, 0, offset, value);
+    boolean result = gattServer.sendResponse(device, requestId, status, offset, value);
     if (result) {
       JSONObject returnObj = new JSONObject();
       addProperty(returnObj, "status", "responded");
@@ -859,6 +876,7 @@ public class BluetoothLePlugin extends CordovaPlugin {
       addProperty(returnObj, "error", "service");
       addProperty(returnObj, "message", "Service not found");
       callbackContext.error(returnObj);
+      return;
     }
 
     UUID characteristicUuid = getUUID(obj.optString("characteristic", null));
@@ -868,6 +886,7 @@ public class BluetoothLePlugin extends CordovaPlugin {
       addProperty(returnObj, "error", "characteristic");
       addProperty(returnObj, "message", "Characteristic not found");
       callbackContext.error(returnObj);
+      return;
     }
 
     byte[] value = getPropertyBytes(obj, "value");
@@ -877,6 +896,7 @@ public class BluetoothLePlugin extends CordovaPlugin {
       addProperty(returnObj, "error", "respond");
       addProperty(returnObj, "message", "Failed to set value");
       callbackContext.error(returnObj);
+      return;
     }
 
     BluetoothGattDescriptor descriptor = characteristic.getDescriptor(clientConfigurationDescriptorUuid);
@@ -4697,6 +4717,27 @@ public class BluetoothLePlugin extends CordovaPlugin {
         return;
       }
 
+      if (preparedWrite) {
+        // Long-write chunk: buffer it until onExecuteWrite assembles or
+        // discards the whole queue. Prepared writes always need an ack
+        // echoing offset and value.
+        synchronized (preparedWrites) {
+          HashMap<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>> forDevice = preparedWrites.get(device.getAddress());
+          if (forDevice == null) {
+            forDevice = new HashMap<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>>();
+            preparedWrites.put(device.getAddress(), forDevice);
+          }
+          TreeMap<Integer, byte[]> chunks = forDevice.get(characteristic);
+          if (chunks == null) {
+            chunks = new TreeMap<Integer, byte[]>();
+            forDevice.put(characteristic, chunks);
+          }
+          chunks.put(offset, value);
+        }
+        gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+        return;
+      }
+
       JSONObject returnObj = new JSONObject();
 
       addDevice(returnObj, device);
@@ -4798,9 +4839,46 @@ public class BluetoothLePlugin extends CordovaPlugin {
       initPeripheralCallback.sendPluginResult(pluginResult);
     }
 
-    //TODO implement this later
     public void onExecuteWrite(BluetoothDevice device, int requestId, boolean execute) {
-      //Log.d("BLE", "execute write");
+      HashMap<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>> forDevice;
+      synchronized (preparedWrites) {
+        forDevice = preparedWrites.remove(device.getAddress());
+      }
+
+      if (execute && forDevice != null && initPeripheralCallback != null) {
+        // Assemble each characteristic's buffered chunks in offset order and
+        // hand the complete value to JS as a normal writeRequested. The
+        // execute request itself is acked below — per-chunk acks already
+        // went out — so responseNeeded is false on the JS side.
+        for (HashMap.Entry<BluetoothGattCharacteristic, TreeMap<Integer, byte[]>> entry : forDevice.entrySet()) {
+          int total = 0;
+          for (byte[] chunk : entry.getValue().values()) {
+            total += chunk.length;
+          }
+          byte[] assembled = new byte[total];
+          int at = 0;
+          for (byte[] chunk : entry.getValue().values()) {
+            System.arraycopy(chunk, 0, assembled, at, chunk.length);
+            at += chunk.length;
+          }
+
+          JSONObject returnObj = new JSONObject();
+          addDevice(returnObj, device);
+          addCharacteristic(returnObj, entry.getKey());
+          addProperty(returnObj, "status", "writeRequested");
+          addProperty(returnObj, "requestId", requestId);
+          addProperty(returnObj, "offset", 0);
+          addPropertyBytes(returnObj, "value", assembled);
+          addProperty(returnObj, "preparedWrite", true);
+          addProperty(returnObj, "responseNeeded", false);
+
+          PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, returnObj);
+          pluginResult.setKeepCallback(true);
+          initPeripheralCallback.sendPluginResult(pluginResult);
+        }
+      }
+
+      gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null);
     }
 
     public void onMtuChanged(BluetoothDevice device, int mtu) {

@@ -54,6 +54,13 @@
         <param name="ios-package" value="BluetoothLePlugin" />
       </feature>
     </config-file>
+    <preference name="BLUETOOTH_USAGE_DESCRIPTION" default="This app uses Bluetooth to communicate with nearby devices." />
+    <config-file target="*-Info.plist" parent="NSBluetoothAlwaysUsageDescription">
+      <string>$BLUETOOTH_USAGE_DESCRIPTION</string>
+    </config-file>
+    <config-file target="*-Info.plist" parent="NSBluetoothPeripheralUsageDescription">
+      <string>$BLUETOOTH_USAGE_DESCRIPTION</string>
+    </config-file>
     <header-file src="src/ios/BluetoothLePlugin.h" />
     <source-file src="src/ios/BluetoothLePlugin.m" />
     <framework src="CoreBluetooth.framework" />
