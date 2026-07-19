@@ -147,6 +147,22 @@ class Device extends Emitter {
   }
 
   /**
+   * Snapshot of this device for UI resync. Subclasses extend it:
+   *   snapshot() { return Object.assign(super.snapshot(), { battery: this._battery }); }
+   */
+  snapshot() {
+    return {
+      deviceType: this.profile.deviceType,
+      id: this.id,
+      name: this.name,
+      state: this.state,
+      disconnectReason: this.disconnectReason,
+      capabilities: this.capabilities,
+      queue: { pending: this.queue.pendingCount, running: this.queue.runningOp }
+    };
+  }
+
+  /**
    * Connect and run the full pipeline; resolves when the device is READY —
    * discovered, configured, subscribed — not merely link-connected.
    */

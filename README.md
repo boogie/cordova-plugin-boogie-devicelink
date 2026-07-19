@@ -176,6 +176,17 @@ never install the two together.
     declarative profile, connect pipeline running through the queue with
     per-step timeouts and retries, notification routing, disconnect reasons,
     and reconnect policies with exponential backoff
+  - `EventStream` — one sequenced pipe for everything: monotonic seq,
+    timestamp, session id and device id on every event, with ring-buffer
+    replay (`replaySince`) and gap detection, so a reloaded consumer can
+    tell exactly what it missed
+  - `Diagnostics` — structured logging (level, category, machine-readable
+    code, free fields) with per-code counters and an exportable `report()`
+  - `Runtime` — registers devices and forwards their lifecycle plus every
+    event their declared capabilities announce into the stream; measures
+    connect-to-ready durations, logs disconnect reasons and scan activity,
+    and serves `getSnapshot()` — the current state of every device, which is
+    how a reloaded UI resyncs
 - **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
   (an ANR observed in production) is fixed at the source — scan state is
   claimed/released in short monitor blocks and framework calls happen outside
@@ -188,11 +199,13 @@ never install the two together.
    fix~~
 3. ~~Transfer engine (ack windows / paced rate), declarative device profiles,
    connection pipeline, `Device` base class, capability protocols — tested
-   against a scriptable virtual-device mock~~ *(you are here)*
-4. Snapshot API + sequenced event stream (survive WebView reloads), structured
-   diagnostics with an exportable report
+   against a scriptable virtual-device mock~~
+4. ~~Snapshot API + sequenced event stream with replay and gap detection,
+   structured diagnostics with an exportable report~~ *(you are here)*
 5. Firmware update module (transport-agnostic: custom BLE, Nordic DFU, SMP) — separate
-   from the core
+   from the core. Longer term: native ownership of connection state, so
+   connections survive WebView reloads entirely and the JS side resyncs from
+   the native snapshot
 
 ## Ideas — beyond the roadmap
 

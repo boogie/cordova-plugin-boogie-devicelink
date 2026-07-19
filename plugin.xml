@@ -23,6 +23,9 @@
   <js-module src="www/devicelink/bulk_transfer.js" name="bulk_transfer" />
   <js-module src="www/devicelink/capabilities.js" name="capabilities" />
   <js-module src="www/devicelink/device.js" name="device" />
+  <js-module src="www/devicelink/event_stream.js" name="event_stream" />
+  <js-module src="www/devicelink/diagnostics.js" name="diagnostics" />
+  <js-module src="www/devicelink/runtime.js" name="runtime" />
   <js-module src="www/devicelink/devicelink.js" name="devicelink">
     <clobbers target="window.DeviceLink" />
   </js-module>
