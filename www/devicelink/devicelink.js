@@ -8,6 +8,8 @@
 const Emitter = require('./emitter');
 const DeviceStateMachine = require('./state_machine');
 const OperationQueue = require('./operation_queue');
+const ScanManager = require('./scan_manager');
+const Pacer = require('./pacer');
 
 const DeviceLink = {
   // Keep in sync with package.json / plugin.xml (asserted by the test suite).
@@ -16,6 +18,8 @@ const DeviceLink = {
   Emitter,
   DeviceStateMachine,
   OperationQueue,
+  ScanManager,
+  Pacer,
 
   STATES: DeviceStateMachine.STATES,
   DISCONNECT_REASONS: DeviceStateMachine.DISCONNECT_REASONS,

@@ -18,6 +18,8 @@
   <js-module src="www/devicelink/emitter.js" name="emitter" />
   <js-module src="www/devicelink/state_machine.js" name="state_machine" />
   <js-module src="www/devicelink/operation_queue.js" name="operation_queue" />
+  <js-module src="www/devicelink/scan_manager.js" name="scan_manager" />
+  <js-module src="www/devicelink/pacer.js" name="pacer" />
   <js-module src="www/devicelink/devicelink.js" name="devicelink">
     <clobbers target="window.DeviceLink" />
   </js-module>

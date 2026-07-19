@@ -109,15 +109,27 @@ never install the two together.
     disconnect reasons, transition history
   - `OperationQueue` — serial per-device execution with priorities, timeouts,
     retries, pause/resume
+  - `ScanManager` — single owner of the native scanner: detector registry,
+    observer subscriptions, and transfer holds that stop the scan for the
+    duration of timing-sensitive transfers
+  - `Pacer` — token-bucket flow control for devices that give no transfer
+    feedback: keep the phone's TX buffer topped up without overrunning the
+    device's receive buffer
+- **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
+  (an ANR observed in production) is fixed at the source — scan state is
+  claimed/released in short monitor blocks and framework calls happen outside
+  them, so stopping the scan during transfers is safe.
 
 ## Roadmap
 
-1. ~~Fork, rebrand, test infrastructure, runtime core~~ *(you are here)*
-2. Scan manager (single scan owner, transfer-aware) + native fixes, including the
-   `stopScan` ↔ `onScanResult` lock-order deadlock
-3. Declarative device profiles, connection pipeline, `Device` base class, capability
-   registry, first device classes — plus a `MockBluetoothLE` simulator with scriptable
-   virtual devices so everything above is testable without hardware
+1. ~~Fork, rebrand, test infrastructure, runtime core~~
+2. ~~Scan manager (single scan owner, transfer holds) + the native scan deadlock
+   fix~~ *(you are here)*
+3. Transfer engine and profiles: chunked bulk writes with pluggable flow control —
+   ack-driven windows where the device acknowledges chunks, `Pacer`-driven fixed
+   rate where it doesn't — plus declarative device profiles, connection pipeline,
+   `Device` base class, capability registry, and the first device classes, all
+   running against a `MockBluetoothLE` simulator with scriptable virtual devices
 4. Snapshot API + sequenced event stream (survive WebView reloads), structured
    diagnostics with an exportable report
 5. Firmware update module (transport-agnostic: custom BLE, Nordic DFU, SMP) — separate
@@ -138,6 +150,9 @@ Related features that would fit this plugin well:
   sizes, phone model and adapter state.
 - **Virtual device transport**: run a device profile against a scripted in-memory
   peripheral — demos, UI development, and CI without hardware.
+- **Bluetooth Classic Serial (SPP) transport** (Android-only): some devices also
+  accept data over an RFCOMM serial link, which is very reliable for bulk
+  transfer — a second transport the transfer engine could prefer when available.
 - **Non-BLE transports**: the runtime API is transport-shaped, not BLE-shaped — a
   WebSocket, LAN, or USB device could implement the same `Device` surface later.
 - **Multi-phone links**: one phone acting as a BLE peripheral for another (the engine
