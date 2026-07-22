@@ -15,17 +15,7 @@
 const Emitter = require('./emitter');
 const OperationQueue = require('./operation_queue');
 const Pacer = require('./pacer');
-
-const BASE_UUID = /^0000([0-9A-F]{4})-0000-1000-8000-00805F9B34FB$/;
-
-function normalizeUuid(uuid) {
-  if (!uuid) {
-    return '';
-  }
-  const upper = String(uuid).toUpperCase();
-  const short = upper.match(BASE_UUID);
-  return short ? short[1] : upper;
-}
+const normalizeUuid = require('./advertisement').normalizeUuid;
 
 function toError(raw) {
   if (raw instanceof Error) {

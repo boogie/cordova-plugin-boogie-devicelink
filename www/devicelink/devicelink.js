@@ -17,6 +17,7 @@ const EventStream = require('./event_stream');
 const Diagnostics = require('./diagnostics');
 const Runtime = require('./runtime');
 const Peripheral = require('./peripheral');
+const Advertisement = require('./advertisement');
 
 const DeviceLink = {
   // Keep in sync with package.json / plugin.xml (asserted by the test suite).
@@ -37,6 +38,13 @@ const DeviceLink = {
 
   // Shared default capability registry (protocols like 'battery').
   capabilities: CapabilityRegistry.default,
+
+  // Public advertisement utilities — usable from legacy scan code too:
+  // DeviceLink.parseAdvertisement(result.advertisement) works with the
+  // Android base64 blob and the iOS parsed object alike.
+  Advertisement,
+  parseAdvertisement: Advertisement.parse,
+  normalizeUuid: Advertisement.normalizeUuid,
 
   STATES: DeviceStateMachine.STATES,
   DISCONNECT_REASONS: DeviceStateMachine.DISCONNECT_REASONS,

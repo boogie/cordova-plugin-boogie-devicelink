@@ -14,6 +14,7 @@
 'use strict';
 
 const Emitter = require('./emitter');
+const Advertisement = require('./advertisement');
 
 class ScanManager extends Emitter {
   /**
@@ -234,10 +235,18 @@ class ScanManager extends Emitter {
   }
 
   _handleResult(result) {
+    // One normalized advertisement per result, shared by every detector —
+    // Android's raw base64 blob and iOS's parsed object become one shape.
+    let adv;
+    try {
+      adv = Advertisement.parse(result.advertisement);
+    } catch (err) {
+      adv = Advertisement.empty();
+    }
     for (const [deviceType, detector] of this._detectors) {
       let info = null;
       try {
-        info = detector(result);
+        info = detector(result, adv);
       } catch (err) {
         if (typeof console !== 'undefined' && console.error) {
           console.error('[DeviceLink] detector "' + deviceType + '" threw:', err);
@@ -260,6 +269,7 @@ class ScanManager extends Emitter {
         if (entry.rssi === undefined) {
           entry.rssi = result.rssi !== undefined ? result.rssi : null;
         }
+        entry.advertisement = adv;
         entry.firstSeen = this._now();
         entry.lastSeen = entry.firstSeen;
         this._discovered.set(id, entry);
@@ -271,6 +281,7 @@ class ScanManager extends Emitter {
         }
       } else {
         known.lastSeen = this._now();
+        known.advertisement = adv;
         if (result.rssi !== undefined) {
           known.rssi = result.rssi;
         }

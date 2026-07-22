@@ -246,7 +246,13 @@ never install the two together.
     retries, pause/resume
   - `ScanManager` — single owner of the native scanner: detector registry,
     observer subscriptions, and transfer holds that stop the scan for the
-    duration of timing-sensitive transfers
+    duration of timing-sensitive transfers; every detector receives the
+    parsed advertisement alongside the raw result
+  - `Advertisement` — advertisement-data parser: Android delivers a base64
+    blob of raw AD bytes, iOS a parsed object — `parse()` normalizes both
+    into one shape (localName, flags, service UUIDs in short form, service
+    data, manufacturer data keyed by company id). Public on the namespace as
+    `DeviceLink.parseAdvertisement`, so legacy scan code can use it too
   - `Pacer` — token-bucket flow control for devices that give no transfer
     feedback: keep the phone's TX buffer topped up without overrunning the
     device's receive buffer
