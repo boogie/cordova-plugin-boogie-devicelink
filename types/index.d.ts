@@ -611,6 +611,16 @@ declare namespace BluetoothlePlugin {
             params: { address: string, pin:string }): void;
 
         /**
+         * Describe the native half: plugin id, version, platform, every action it dispatches and static feature facts (bridge contract v1).
+         * Cheap and side-effect free, never fails. The promise-style twin is DeviceLink.describe().
+         * @param describeSuccess The callback that is passed the envelope
+         * @param describeError   The callback that will be triggered if the native side cannot answer
+         */
+        describe(
+            describeSuccess: (result: DescribeResult) => void,
+            describeError: (error: Error) => void): void;
+
+        /**
          * Helper function to convert a base64 encoded string from a characteristic or descriptor value into a uint8Array object
          * @param  value Encoded string which need t be encoded
          * @return       uint8Array object
@@ -1037,6 +1047,20 @@ declare namespace BluetoothlePlugin {
         CALLBACK_TYPE_ALL_MATCHES = 1,
         CALLBACK_TYPE_FIRST_MATCH = 2,
         CALLBACK_TYPE_MATCH_LOST = 4
+    }
+
+    interface DescribeResult {
+        /** Plugin id, exactly as in plugin.xml */
+        id: string,
+        /** plugin.xml version compiled into the native half */
+        version: string,
+        platform: 'android' | 'ios',
+        /** Bridge contract version */
+        api: number,
+        /** Every action name the native half dispatches, sorted, describe included */
+        actions: string[],
+        /** Static facts: peripheral, permissionsBt, sequence, apiLevel (Android only) */
+        features: { [feature: string]: boolean | number | string | (boolean | number | string)[] }
     }
 
     interface Error {

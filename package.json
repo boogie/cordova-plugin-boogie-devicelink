@@ -1,6 +1,6 @@
 {
   "name": "cordova-plugin-boogie-devicelink",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stateful BLE device runtime for Cordova apps (Android, iOS): device profiles, connection state machine, per-device operation queue, reconnect policies — built on a maintained fork of cordova-plugin-bluetoothle. JS global: DeviceLink (the raw BLE API stays available as bluetoothle).",
   "types": "./types/index.d.ts",
   "cordova": {

@@ -233,6 +233,66 @@ The plugin **replaces** `cordova-plugin-bluetoothle` (it ships the same native e
 and the same `window.bluetoothle` global) — remove the original before installing, and
 never install the two together.
 
+## Describe and raw exec
+
+A Cordova plugin's JS bridge ships frozen together with its native half — an
+over-the-air update of the app's web code never replaces `plugins/`. App code
+newer than the installed bridge therefore needs two things: a cheap, uniform way
+to learn what the native half is and can do, and a way to reach a native action
+the frozen bridge does not wrap. Every first-party boogie plugin answers both the
+same way (bridge contract v1); here they live on `DeviceLink`:
+
+```js
+const info = await DeviceLink.describe();
+// {
+//   id: 'cordova-plugin-boogie-devicelink',
+//   version: '0.2.0',                 // equals DeviceLink.VERSION when JS and native match
+//   platform: 'android',              // or 'ios'
+//   api: 1,
+//   actions: ['addService', 'bond', …, 'describe', …, 'writeQ'],   // sorted
+//   features: { peripheral: true, permissionsBt: true, sequence: false, apiLevel: 34 }
+// }
+```
+
+`describe` is side-effect free and never fails: it reads compile-time constants
+and static facts only — no permission prompt, no adapter access, no I/O.
+`actions` lists every action the native half *dispatches* (on Android that
+includes the iOS-only `services` / `characteristics` / `descriptors`, which
+answer with an "Operation unsupported" error). `features`:
+
+| feature | meaning |
+|---|---|
+| `peripheral` | GATT server + advertising is available (`true` on iOS; Android 5+) |
+| `permissionsBt` | the Android 12 `hasPermissionBt*` / `requestPermissionBt*` actions are dispatched (`true` on Android, `false` on iOS) |
+| `sequence` | notifications carry sequence numbers for reordering (`false`: the engine does not number them) |
+| `apiLevel` | Android only: `Build.VERSION.SDK_INT` |
+
+`DeviceLink.ID`, `DeviceLink.VERSION` and `DeviceLink.SERVICE` (the native
+service name, `BluetoothLePlugin`) are the same constants on the JS side; the
+callback-style twin is `bluetoothle.describe(success, error)`.
+
+**Raw exec** — `DeviceLink.exec(action, args, onProgress)` is a promise wrapper
+around `cordova.exec` for the plugin's service, nothing more:
+
+```js
+// reach an action the installed bridge doesn't wrap yet
+const { hasPermission } = await DeviceLink.exec('hasPermissionBtConnect');
+
+// a streaming action: every callback goes to onProgress,
+// the promise resolves with the first result
+await DeviceLink.exec('subscribe', [{ address, service, characteristic }],
+  (result) => { if (result.status === 'subscribedResult') handle(result.value); });
+```
+
+`args` is handed to the native side as-is (default `[]`). A native error rejects
+with an `Error` whose `message` is the native error string, its `message` field,
+or its JSON, and whose `native` property is the raw payload.
+
+> **Warning.** `exec` bypasses the bridge entirely: no argument normalisation, no
+> notification reordering, no state tracking — the `Device`, `Peripheral` and
+> `ScanManager` layers do not see what goes through it. Use it for actions the
+> frozen bridge lacks, and check `describe().actions` first.
+
 ## What exists today
 
 - **Raw BLE API** — the complete `bluetoothle` API, unchanged. Documentation:
@@ -283,6 +343,9 @@ never install the two together.
     `respond()`/`error()` helpers, per-characteristic auto-respond handlers,
     `notify`/`notifyAll` plus a queued+paced `queueNotify`, and UUID
     normalization across platforms
+- **Bridge contract v1**: `DeviceLink.describe()` — what the native half is
+  and can do — and `DeviceLink.exec()`, the raw passthrough; see
+  [Describe and raw exec](#describe-and-raw-exec)
 - **Native fix**: the Android `stopScan` ↔ `onScanResult` lock-order deadlock
   (an ANR observed in production) is fixed at the source — scan state is
   claimed/released in short monitor blocks and framework calls happen outside

@@ -1,6 +1,8 @@
-// Consistency checks between plugin.xml, package.json, and the DeviceLink
-// module graph — the things that silently break a Cordova plugin when they
-// drift apart.
+// Consistency checks between plugin.xml, package.json, the native sources
+// and the DeviceLink module graph — the things that silently break a Cordova
+// plugin when they drift apart. The bridge contract (describe + raw exec)
+// gets the same treatment: version literals, ids, the service name and the
+// native action lists are all cross-checked against the dispatch code.
 'use strict';
 
 const { test } = require('node:test');
@@ -12,6 +14,24 @@ const root = path.join(__dirname, '..');
 const pluginXml = fs.readFileSync(path.join(root, 'plugin.xml'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const DeviceLink = require('../www/devicelink/devicelink.js');
+const javaSrc = fs.readFileSync(path.join(root, 'src', 'android', 'BluetoothLePlugin.java'), 'utf8');
+const objcSrc = fs.readFileSync(path.join(root, 'src', 'ios', 'BluetoothLePlugin.m'), 'utf8');
+const objcHeader = fs.readFileSync(path.join(root, 'src', 'ios', 'BluetoothLePlugin.h'), 'utf8');
+const bridgeJs = fs.readFileSync(path.join(root, 'www', 'bluetoothle.js'), 'utf8');
+
+function literal(src, re) {
+  const m = src.match(re);
+  assert.ok(m, re + ' not found');
+  return m[1];
+}
+
+/** The quoted names of a native array literal, in source order. */
+function quotedList(src, opener) {
+  const at = src.indexOf(opener);
+  assert.ok(at >= 0, opener + ' not found');
+  const body = src.slice(at, src.indexOf('};', at));
+  return [...body.matchAll(/"(\w+)"/g)].map((m) => m[1]);
+}
 
 const pluginTag = pluginXml.match(/<plugin\b([^>]*)>/)[1];
 const pluginId = pluginTag.match(/\bid="([^"]+)"/)[1];
@@ -22,9 +42,11 @@ test('plugin id matches package.json name and cordova id', () => {
   assert.equal(pluginId, pkg.cordova.id);
 });
 
-test('plugin.xml, package.json and DeviceLink.VERSION agree', () => {
+test('plugin.xml, package.json, DeviceLink.VERSION and the native version constants agree', () => {
   assert.equal(pluginVersion, pkg.version);
   assert.equal(DeviceLink.VERSION, pkg.version);
+  assert.equal(literal(javaSrc, /String pluginVersion = "([^"]+)"/), pkg.version, 'Android pluginVersion');
+  assert.equal(literal(objcSrc, /NSString \*const pluginVersion = @"([^"]+)"/), pkg.version, 'iOS pluginVersion');
 });
 
 test('every js-module source file exists', () => {
@@ -89,4 +111,66 @@ test('the iOS platform ships the Bluetooth usage descriptions', () => {
   assert.ok(pluginXml.includes('NSBluetoothAlwaysUsageDescription'));
   assert.ok(pluginXml.includes('NSBluetoothPeripheralUsageDescription'));
   assert.ok(pluginXml.includes('BLUETOOTH_USAGE_DESCRIPTION'));
+});
+
+// --- bridge contract v1: describe + raw exec ---------------------------------
+
+test('DeviceLink.ID and the native plugin ids equal the plugin.xml id', () => {
+  assert.equal(DeviceLink.ID, pluginId);
+  assert.equal(literal(javaSrc, /String pluginId = "([^"]+)"/), pluginId, 'Android pluginId');
+  assert.equal(literal(objcSrc, /NSString \*const pluginId = @"([^"]+)"/), pluginId, 'iOS pluginId');
+});
+
+test('DeviceLink.SERVICE names the native feature on both platforms and the bluetoothle bridge', () => {
+  for (const platform of ['android', 'ios']) {
+    const block = pluginXml.slice(pluginXml.indexOf('<platform name="' + platform + '">'));
+    assert.equal(literal(block, /<feature name="([^"]+)">/), DeviceLink.SERVICE, platform + ' feature name');
+  }
+  assert.equal(literal(bridgeJs, /var bluetoothleName = "([^"]+)"/), DeviceLink.SERVICE);
+});
+
+test('describe is dispatched natively on both platforms and wrapped by both globals', () => {
+  assert.ok(javaSrc.includes('if ("describe".equals(action)) {'), 'Android execute() lacks describe');
+  assert.ok(javaSrc.includes('private void describeAction(CallbackContext callbackContext)'));
+  assert.ok(objcSrc.includes('- (void)describe:(CDVInvokedUrlCommand *)command {'), 'iOS lacks describe:');
+  assert.ok(objcHeader.includes('- (void)describe:(CDVInvokedUrlCommand *)command;'), 'iOS header lacks describe:');
+  assert.ok(bridgeJs.includes('bluetoothleName, "describe", []'), 'bluetoothle.describe missing');
+  assert.equal(typeof DeviceLink.describe, 'function');
+  assert.equal(typeof DeviceLink.exec, 'function');
+});
+
+test('the Android describe action list equals the execute() dispatch chain, sorted', () => {
+  const dispatched = [...new Set([...javaSrc.matchAll(/"(\w+)"\.equals\(action\)/g)].map((m) => m[1]))].sort();
+  const listed = quotedList(javaSrc, 'String[] describeActions = {');
+  assert.ok(dispatched.includes('describe'));
+  assert.ok(dispatched.length > 50, 'expected the full bluetoothle action set');
+  assert.deepEqual(listed, dispatched);
+});
+
+test('the iOS describe action list equals the -(void)name:(CDVInvokedUrlCommand*) methods, sorted', () => {
+  const implemented = [...new Set(
+    [...objcSrc.matchAll(/^- \(void\)(\w+):\(CDVInvokedUrlCommand \*\)command/gm)].map((m) => m[1])
+  )].sort();
+  const declared = new Set(
+    [...objcHeader.matchAll(/^- \(void\)(\w+):\(CDVInvokedUrlCommand \*\)command;/gm)].map((m) => m[1])
+  );
+  const listed = quotedList(objcSrc, 'describeActions[] = {');
+  assert.ok(implemented.includes('describe'));
+  assert.ok(implemented.length > 40, 'expected the full bluetoothle action set');
+  assert.deepEqual(listed, implemented);
+  for (const name of listed) {
+    assert.ok(declared.has(name), name + ' is implemented but not declared in the header');
+  }
+});
+
+test('every action the bluetoothle bridge wraps is dispatched by at least one platform', () => {
+  // DeviceLink.exec is the deliberate way past this set and is not checked.
+  const union = new Set(
+    quotedList(javaSrc, 'String[] describeActions = {').concat(quotedList(objcSrc, 'describeActions[] = {'))
+  );
+  const wrapped = [...new Set([...bridgeJs.matchAll(/bluetoothleName, "(\w+)"/g)].map((m) => m[1]))];
+  assert.ok(wrapped.length > 50);
+  for (const name of wrapped) {
+    assert.ok(union.has(name), 'bluetoothle.' + name + ' calls an action no platform dispatches');
+  }
 });

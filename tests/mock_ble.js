@@ -1,5 +1,6 @@
 // Shared test doubles: a scriptable bluetoothle mock (virtual devices with
-// configurable failure modes), manual timers, and a microtask flusher.
+// configurable failure modes), a scriptable cordova.exec double for the
+// bridge contract, manual timers, and a microtask flusher.
 'use strict';
 
 function createMockBle() {
@@ -77,6 +78,24 @@ function createMockBle() {
   return ble;
 }
 
+/** A cordova double for the bridge contract: `handlers[action]` plays the
+ *  native side as (success, error, args); every exec call is logged as
+ *  [service, action, args]. An action without a handler fails the way
+ *  Cordova reports an unknown action — the error callback gets a string. */
+function createMockCordova(handlers = {}) {
+  const cordova = {
+    log: [],
+    handlers,
+    exec(success, error, service, action, args) {
+      cordova.log.push([service, action, args]);
+      const handler = cordova.handlers[action];
+      if (!handler) { error('Invalid action'); return; }
+      handler(success, error, args);
+    }
+  };
+  return cordova;
+}
+
 function createTimers() {
   const timers = { scheduled: [] };
   timers.setTimeout = (fn, ms) => {
@@ -100,4 +119,4 @@ function createTimers() {
 /** Flush pending microtasks so awaited mock callbacks propagate. */
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-module.exports = { createMockBle, createTimers, tick };
+module.exports = { createMockBle, createMockCordova, createTimers, tick };

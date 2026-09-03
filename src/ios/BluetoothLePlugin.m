@@ -144,6 +144,22 @@ NSString *const operationSubscribe = @"subscribe";
 NSString *const operationUnsubscribe = @"unsubscribe";
 NSString *const operationWrite = @"write";
 
+//Bridge contract v1 (describe): what this native half is and which actions it
+//dispatches. The version literal must equal plugin.xml — asserted by the test
+//suite, which also checks describeActions against the -(void)name: methods.
+static NSString *const pluginId = @"cordova-plugin-boogie-devicelink";
+static NSString *const pluginVersion = @"0.2.0";
+static NSString *const describeActions[] = {
+  @"addService", @"bond", @"characteristics", @"close", @"connect", @"describe",
+  @"descriptors", @"disable", @"disconnect", @"discover", @"enable", @"hasPermission",
+  @"initialize", @"initializePeripheral", @"isAdvertising", @"isBonded", @"isConnected", @"isDiscovered",
+  @"isEnabled", @"isInitialized", @"isLocationEnabled", @"isScanning", @"mtu", @"notify",
+  @"read", @"readDescriptor", @"reconnect", @"removeAllServices", @"removeService", @"requestConnectionPriority",
+  @"requestLocation", @"requestPermission", @"respond", @"retrieveConnected", @"retrievePeripheralsByAddress", @"rssi",
+  @"services", @"startAdvertising", @"startScan", @"stopAdvertising", @"stopScan", @"subscribe",
+  @"unbond", @"unsubscribe", @"wasConnected", @"write", @"writeDescriptor", @"writeQ"
+};
+
 @implementation BluetoothLePlugin
 
 //Peripheral Manager Functions
@@ -2035,6 +2051,35 @@ NSString *const operationWrite = @"write";
 - (void)requestLocation:(CDVInvokedUrlCommand *)command {
   NSDictionary* returnObj = [NSDictionary dictionaryWithObjectsAndKeys: @"requestLocation", keyError, logOperationUnsupported, keyMessage, nil];
   CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsDictionary:returnObj];
+  [pluginResult setKeepCallbackAsBool:false];
+  [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+}
+
+//Bridge contract v1: describe what this native half is and can do. Reads only
+//compile-time constants — no CoreBluetooth or permission calls — so it never
+//fails and returns within a few milliseconds.
+- (void)describe:(CDVInvokedUrlCommand *)command {
+  //peripheral: CBPeripheralManager is always available on iOS
+  //permissionsBt: the Android 12 hasPermissionBt*/requestPermissionBt* actions are not dispatched here
+  //sequence: notifications carry no sequence numbers, the JS reorderer passes them straight through
+  NSDictionary* features = [NSDictionary dictionaryWithObjectsAndKeys:
+    [NSNumber numberWithBool:YES], @"peripheral",
+    [NSNumber numberWithBool:NO], @"permissionsBt",
+    [NSNumber numberWithBool:NO], @"sequence",
+    nil];
+
+  NSArray* actions = [NSArray arrayWithObjects:describeActions count:(sizeof(describeActions) / sizeof(describeActions[0]))];
+
+  NSDictionary* returnObj = [NSDictionary dictionaryWithObjectsAndKeys:
+    pluginId, @"id",
+    pluginVersion, @"version",
+    @"ios", @"platform",
+    [NSNumber numberWithInt:1], @"api",
+    actions, @"actions",
+    features, @"features",
+    nil];
+
+  CDVPluginResult* pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:returnObj];
   [pluginResult setKeepCallbackAsBool:false];
   [self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
 }

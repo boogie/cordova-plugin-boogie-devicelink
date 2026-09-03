@@ -303,6 +303,24 @@ public class BluetoothLePlugin extends CordovaPlugin {
   //Client Configuration UUID for notifying/indicating
   private final UUID clientConfigurationDescriptorUuid = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB");
 
+  //Bridge contract v1 (describe): what this native half is and which actions
+  //it dispatches. The version literal must equal plugin.xml — asserted by the
+  //test suite, which also checks describeActions against the execute() chain.
+  private static final String pluginId = "cordova-plugin-boogie-devicelink";
+  private static final String pluginVersion = "0.2.0";
+  private static final String[] describeActions = {
+    "addService", "bond", "characteristics", "close", "connect", "describe",
+    "descriptors", "disable", "disconnect", "discover", "enable", "getAdapterInfo",
+    "hasPermission", "hasPermissionBtAdvertise", "hasPermissionBtConnect", "hasPermissionBtScan", "initialize", "initializePeripheral",
+    "isAdvertising", "isBonded", "isConnected", "isDiscovered", "isEnabled", "isInitialized",
+    "isLocationEnabled", "isScanning", "mtu", "notify", "read", "readDescriptor",
+    "reconnect", "removeAllServices", "removeService", "requestConnectionPriority", "requestLocation", "requestPermission",
+    "requestPermissionBtAdvertise", "requestPermissionBtConnect", "requestPermissionBtScan", "respond", "retrieveConnected", "retrievePeripheralsByAddress",
+    "rssi", "services", "setPin", "startAdvertising", "startScan", "stopAdvertising",
+    "stopScan", "subscribe", "unbond", "unsubscribe", "wasConnected", "write",
+    "writeDescriptor", "writeQ"
+  };
+
   public BluetoothLePlugin() {
 
     if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.LOLLIPOP) {
@@ -318,7 +336,9 @@ public class BluetoothLePlugin extends CordovaPlugin {
   @Override
   public boolean execute(String action, final JSONArray args, final CallbackContext callbackContext) throws JSONException {
     //Execute the specified action
-    if ("initialize".equals(action)) {
+    if ("describe".equals(action)) {
+      describeAction(callbackContext);
+    } else if ("initialize".equals(action)) {
       initializeAction(args, callbackContext);
     } else if ("enable".equals(action)) {
       enableAction(callbackContext);
@@ -450,6 +470,30 @@ public class BluetoothLePlugin extends CordovaPlugin {
       return false;
     }
     return true;
+  }
+
+  //Bridge contract v1: describe what this native half is and can do. Reads
+  //only compile-time constants and Build.VERSION — no adapter, permission or
+  //I/O calls — so it never fails and returns within a few milliseconds.
+  private void describeAction(CallbackContext callbackContext) {
+    JSONObject features = new JSONObject();
+    //Peripheral mode (GATT server + advertising) needs API 21, see initializePeripheralAction
+    addProperty(features, "peripheral", Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP);
+    //The Android 12 hasPermissionBt*/requestPermissionBt* actions are dispatched here
+    addProperty(features, "permissionsBt", true);
+    //Notifications carry no sequence numbers, the JS reorderer passes them straight through
+    addProperty(features, "sequence", false);
+    addProperty(features, "apiLevel", Build.VERSION.SDK_INT);
+
+    JSONObject returnObj = new JSONObject();
+    addProperty(returnObj, "id", pluginId);
+    addProperty(returnObj, "version", pluginVersion);
+    addProperty(returnObj, "platform", "android");
+    addProperty(returnObj, "api", 1);
+    addProperty(returnObj, "actions", new JSONArray(Arrays.asList(describeActions)));
+    addProperty(returnObj, "features", features);
+
+    callbackContext.success(returnObj);
   }
 
   private void initializePeripheralAction(JSONArray args, CallbackContext callbackContext) {

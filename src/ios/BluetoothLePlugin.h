@@ -74,4 +74,6 @@
 - (void)respond:(CDVInvokedUrlCommand *)command;
 - (void)notify:(CDVInvokedUrlCommand *)command;
 
+- (void)describe:(CDVInvokedUrlCommand *)command;
+
 @end

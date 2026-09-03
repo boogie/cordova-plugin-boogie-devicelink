@@ -204,6 +204,9 @@ var bluetoothle = {
   setPin: function(successCallback, errorCallback, params) {
     cordova.exec(successCallback, errorCallback, bluetoothleName, "setPin", [params]);
   },
+  describe: function(successCallback, errorCallback) {
+    cordova.exec(successCallback, errorCallback, bluetoothleName, "describe", []);
+  },
   encodedStringToBytes: function(string) {
     var data = atob(string);
     var bytes = new Uint8Array(data.length);
